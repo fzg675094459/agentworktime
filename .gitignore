@@ -7,4 +7,32 @@ venv/
 env/
 .env
 .idea/
-gdrive_service_account.json 
+gdrive_service_account.json
+
+# 忽略常见大文件和目录
+*.log
+*.csv
+*.tsv
+*.sqlite
+*.db
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+*.bak
+*.tmp
+*.swp
+.DS_Store
+
+# 忽略常见数据、输出、构建目录
+data/
+datasets/
+logs/
+output/
+dist/
+build/
+uploads/
+tmp/
+.cache/
+node_modules/
