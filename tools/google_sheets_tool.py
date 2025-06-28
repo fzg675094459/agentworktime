@@ -29,9 +29,8 @@ def _get_worksheet():
 # --- 这是最终的、最可靠的实现 ---
 def _find_or_create_row(worksheet, target_date_str: str):
     """
-    在表格中查找指定日期的行。如果找不到，就在表格末尾创建新的一行。
+    在表格中查找指定日期的行。如果找不到，则在保持日期顺序的情况下创建新行。
     返回该行的索引（行号）。
-    此版本不依赖任何不稳定的异常捕获。
     """
     # 尝试查找单元格
     cell = worksheet.find(target_date_str, in_column=1)
@@ -41,15 +40,35 @@ def _find_or_create_row(worksheet, target_date_str: str):
         # 如果找到了，直接返回行号
         return cell.row
     else:
-        # 如果没找到 (cell is None)，就创建新的一行
+        # 如果没找到，则创建新行并插入到正确的位置
         target_date = datetime.strptime(target_date_str, "%Y-%m-%d").date()
+        
+        # 获取第一列所有日期
+        all_dates_str = worksheet.col_values(1)
+        
+        # 寻找正确的插入位置，跳过表头
+        insert_row_index = len(all_dates_str) + 1 # 默认为在末尾追加
+        for i, current_date_str in enumerate(all_dates_str[1:], start=2): # gspread行号从1开始, 我们跳过第1行表头
+            try:
+                current_date = datetime.strptime(current_date_str, "%Y-%m-%d").date()
+                if target_date < current_date:
+                    insert_row_index = i
+                    break
+            except ValueError:
+                # 忽略无法解析为日期的行
+                continue
+        
+        # 准备新行数据
         weekday_str = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][target_date.weekday()]
+        # 默认根据是否为周末来判断工作状态
+        workday_status = "是" if target_date.weekday() < 5 else "否"
+        new_row_data = [target_date_str, weekday_str, workday_status, "18:00:00"]
         
-        new_row_data = [target_date_str, weekday_str, "是", "18:00:00"]
-        worksheet.append_row(new_row_data, value_input_option='USER_ENTERED')
+        # 在计算出的位置插入新行
+        worksheet.insert_row(new_row_data, index=insert_row_index, value_input_option='USER_ENTERED')
         
-        # 返回新创建的最后一行的行号
-        return len(worksheet.get_all_values())
+        # 返回新行的行号
+        return insert_row_index
 
 # --- 新工具 1: 更新排班 ---
 @tool("Update Schedule Tool")
@@ -193,18 +212,29 @@ def get_daily_suggestion_tool() -> str:
     获取今天的下班建议。它只读取数据进行计算，不写入任何内容。
     """
     try:
-        worksheet = _get_worksheet()
-        today_str = date.today().strftime("%Y-%m-%d")
+        today = date.today()
+        # 首先，直接判断今天是不是周末
+        if today.weekday() >= 5: # 5是周六, 6是周日
+            return "今天是周末，好好休息吧！"
 
-        # 检查今天是否是工作日
+        worksheet = _get_worksheet()
+        today_str = today.strftime("%Y-%m-%d")
+
+        # 检查今天的计划是否已设定，以及是否为工作日
         try:
             cell = worksheet.find(today_str, in_column=1)
-            is_workday = worksheet.cell(cell.row, 3).value.lower() == '是'
-            if not is_workday:
-                return "今天不是工作日，好好休息！"
-        except (gspread.CellNotFound, AttributeError):
-             # 找不到日期或单元格为空等情况
+            if not cell: # 如果找不到今天的日期行
+                return "今天的计划尚未设定，请先规划日程。"
+            is_workday_value = worksheet.cell(cell.row, 3).value
+            if not is_workday_value or is_workday_value.lower() != '是':
+                return "根据计划，今天不是工作日，好好休息！"
+        except gspread.CellNotFound:
+             # 找不到日期也意味着计划未设定
             return "今天的计划尚未设定，请先规划日程。"
+        except AttributeError:
+            # 单元格为空值等情况
+            return "今天的计划尚未设定或格式不正确，请检查表格。"
+
 
         # 计算累计加班和未来工作日
         all_overtime_values = worksheet.col_values(6)[1:]

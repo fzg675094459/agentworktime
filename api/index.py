@@ -5,6 +5,7 @@ from langchain_openai import ChatOpenAI # 或其他LLM
 from dotenv import load_dotenv
 import os
 import sys
+import traceback
 from datetime import date, timedelta
 from tools.google_sheets_tool import update_schedule_tool, clock_out_tool, populate_month_schedule_tool
 # 添加项目根目录到sys.path
