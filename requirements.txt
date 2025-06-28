@@ -1,10 +1,8 @@
+flask
+python-dotenv
 crewai
-crewai_tools
+langchain-openai
+gspread
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
-gspread
-oauth2client
-python-dotenv
-flask
-langchain-openai
