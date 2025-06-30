@@ -211,67 +211,108 @@ def get_daily_suggestion_tool() -> str:
     """
     获取今天的下班建议。它只读取数据进行计算，不写入任何内容。
     """
+    print("--- [LOG] Entering get_daily_suggestion_tool ---")
     try:
         today = date.today()
-        # 首先，直接判断今天是不是周末
-        if today.weekday() >= 5: # 5是周六, 6是周日
-            return "今天是周末，好好休息吧！"
+        print(f"[LOG] Today's date: {today}")
 
+        if today.weekday() >= 5:
+            suggestion = "今天是周末，好好休息吧！"
+            print(f"[LOG] Today is a weekend. Returning: {suggestion}")
+            return suggestion
+
+        print("[LOG] Connecting to worksheet...")
         worksheet = _get_worksheet()
+        print("[LOG] Successfully connected to worksheet.")
+        
         today_str = today.strftime("%Y-%m-%d")
+        print(f"[LOG] Formatted today's date string: {today_str}")
 
-        # 检查今天的计划是否已设定，以及是否为工作日
+        cell = None
         try:
+            print(f"[LOG] Searching for cell with value '{today_str}' in column 1...")
             cell = worksheet.find(today_str, in_column=1)
-            if not cell: # 如果找不到今天的日期行
-                return "今天的计划尚未设定，请先规划日程。"
+            if not cell:
+                suggestion = "今天的计划尚未设定，请先规划日程。"
+                print(f"[LOG] Cell not found for today. Returning: {suggestion}")
+                return suggestion
+            print(f"[LOG] Found cell at row: {cell.row}, col: {cell.col}")
+
             is_workday_value = worksheet.cell(cell.row, 3).value
-            if not is_workday_value or is_workday_value.lower() != '是':
-                return "根据计划，今天不是工作日，好好休息！"
+            print(f"[LOG] Value of 'is_workday' cell (Row {cell.row}, Col 3): '{is_workday_value}' (Type: {type(is_workday_value)})")
+            
+            if not is_workday_value or str(is_workday_value).strip().lower() != '是':
+                suggestion = "根据计划，今天不是工作日，好好休息！"
+                print(f"[LOG] Today is not a workday according to the sheet. Returning: {suggestion}")
+                return suggestion
+
         except gspread.CellNotFound:
-             # 找不到日期也意味着计划未设定
-            return "今天的计划尚未设定，请先规划日程。"
-        except AttributeError:
-            # 单元格为空值等情况
-            return "今天的计划尚未设定或格式不正确，请检查表格。"
+            suggestion = "今天的计划尚未设定，请先规划日程。 (CellNotFound)"
+            print(f"[LOG] gspread.CellNotFound exception. Returning: {suggestion}")
+            return suggestion
+        except Exception as e:
+            suggestion = f"在检查工作日时发生未知错误: {e}"
+            print(f"[LOG] An unexpected error occurred while checking for workday: {e}")
+            return suggestion
 
-
-        # 计算累计加班和未来工作日
+        print("[LOG] Proceeding to overtime calculation...")
         all_overtime_values = worksheet.col_values(6)[1:]
-        monthly_total_overtime = sum(float(v) for v in all_overtime_values if v and v.replace('.', '', 1).isdigit())
+        print(f"[LOG] Fetched overtime values (Column 6): {all_overtime_values}")
+        
+        # 增强的求和逻辑，能处理各种意外情况
+        monthly_total_overtime = 0
+        for v in all_overtime_values:
+            try:
+                # 尝试将值转换为浮点数，忽略空字符串或非数字
+                if v and isinstance(v, (str, int, float)):
+                    monthly_total_overtime += float(v)
+            except (ValueError, TypeError):
+                print(f"[LOG] Could not convert overtime value '{v}' to float. Skipping.")
+                continue
+        print(f"[LOG] Calculated monthly_total_overtime: {monthly_total_overtime}")
 
         all_dates = worksheet.col_values(1)
         all_workday_flags = worksheet.col_values(3)
+        print("[LOG] Fetched all dates (Col 1) and workday flags (Col 3).")
+
         future_workdays = 0
-        
         today_sheet_index = -1
         if today_str in all_dates:
             today_sheet_index = all_dates.index(today_str)
+            print(f"[LOG] Found today's date at index: {today_sheet_index}")
+        else:
+            print("[LOG] Today's date was not found in the date column. This should not happen if cell was found earlier.")
 
-        # 注意：这里计算未来工作日时，不包含今天
         if today_sheet_index != -1:
+            print("[LOG] Calculating future workdays...")
             for i in range(today_sheet_index + 1, len(all_dates)):
-                if i < len(all_workday_flags) and all_workday_flags[i] and all_workday_flags[i].lower() == '是':
+                if i < len(all_workday_flags) and str(all_workday_flags[i]).strip().lower() == '是':
                     future_workdays += 1
+            print(f"[LOG] Calculated future_workdays: {future_workdays}")
         
         remaining_overtime_budget = 29 - monthly_total_overtime
+        print(f"[LOG] Remaining overtime budget: {remaining_overtime_budget}")
         
-        # 计算今天的建议下班时间
-        # 假设今天的加班时间也要均分到剩余天数里 (包括今天)
-        total_remaining_workdays = future_workdays + 1 # 未来工作日 + 今天
+        total_remaining_workdays = future_workdays + 1
+        print(f"[LOG] Total remaining workdays (including today): {total_remaining_workdays}")
         
+        suggestion = ""
         if monthly_total_overtime >= 29:
-            return "加班已满，请18:00准时下班！"
-
-        if total_remaining_workdays > 0 and remaining_overtime_budget > 0:
+            suggestion = "加班已满，请18:00准时下班！"
+        elif total_remaining_workdays > 0 and remaining_overtime_budget > 0:
             avg_overtime_per_day = remaining_overtime_budget / total_remaining_workdays
             suggested_off_time_seconds = 18 * 3600 + avg_overtime_per_day * 3600
             h = int(suggested_off_time_seconds // 3600)
             m = int((suggested_off_time_seconds % 3600) // 60)
-            return f"若要均分剩余加班，今天建议在 {h:02d}:{m:02d} 下班。"
+            suggestion = f"若要均分剩余加班，今天建议在 {h:02d}:{m:02d} 下班。"
         else:
-            return "请18:00准时下班，享受生活！"
+            suggestion = "请18:00准时下班，享受生活！"
+        
+        print(f"[LOG] Final suggestion: {suggestion}")
+        return suggestion
 
     except Exception as e:
         import traceback
-        return f"获取建议时出错: {e}"        
+        error_message = f"获取建议时发生严重错误: {type(e).__name__} - {e}\n{traceback.format_exc()}"
+        print(f"[LOG] --- FATAL ERROR --- \n{error_message}")
+        return error_message        
