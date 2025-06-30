@@ -285,10 +285,18 @@ def get_daily_suggestion_tool() -> str:
 
         if today_sheet_index != -1:
             print("[LOG] Calculating future workdays...")
+            current_month = date.today().month
             for i in range(today_sheet_index + 1, len(all_dates)):
+                try:
+                    future_date = datetime.strptime(all_dates[i], "%Y-%m-%d").date()
+                    if future_date.month != current_month:
+                        continue # Skip dates not in the current month
+                except (ValueError, IndexError):
+                    continue # Skip rows with invalid date formats
+
                 if i < len(all_workday_flags) and str(all_workday_flags[i]).strip().lower() == '是':
                     future_workdays += 1
-            print(f"[LOG] Calculated future_workdays: {future_workdays}")
+            print(f"[LOG] Calculated future_workdays (within current month): {future_workdays}")
         
         remaining_overtime_budget = 29 - monthly_total_overtime
         print(f"[LOG] Remaining overtime budget: {remaining_overtime_budget}")
