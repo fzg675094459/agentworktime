@@ -297,14 +297,23 @@ def get_daily_suggestion_tool() -> str:
         print(f"[LOG] Total remaining workdays (including today): {total_remaining_workdays}")
         
         suggestion = ""
-        if monthly_total_overtime >= 29:
-            suggestion = "加班已满，请18:00准时下班！"
-        elif total_remaining_workdays > 0 and remaining_overtime_budget > 0:
+        # 1. 如果加班预算已经用完或超额
+        if remaining_overtime_budget <= 0:
+            suggestion = f"加班额度已用完 (剩余 {remaining_overtime_budget:.2f} 小时)，请18:00准时下班！"
+        # 2. 如果今天之后还有工作日
+        elif future_workdays > 0:
             avg_overtime_per_day = remaining_overtime_budget / total_remaining_workdays
             suggested_off_time_seconds = 18 * 3600 + avg_overtime_per_day * 3600
             h = int(suggested_off_time_seconds // 3600)
             m = int((suggested_off_time_seconds % 3600) // 60)
             suggestion = f"若要均分剩余加班，今天建议在 {h:02d}:{m:02d} 下班。"
+        # 3. 如果只剩今天这最后一个工作日
+        elif total_remaining_workdays == 1:
+            suggested_off_time_seconds = 18 * 3600 + remaining_overtime_budget * 3600
+            h = int(suggested_off_time_seconds // 3600)
+            m = int((suggested_off_time_seconds % 3600) // 60)
+            suggestion = f"今天是本月最后工作日，为用完额度，建议在 {h:02d}:{m:02d} 下班。"
+        # 4. 其他意外情况
         else:
             suggestion = "请18:00准时下班，享受生活！"
         
