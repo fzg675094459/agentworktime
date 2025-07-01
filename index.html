@@ -71,9 +71,8 @@
         document.addEventListener('DOMContentLoaded', fetchSuggestion);
 
         // 通用的API请求函数
-        async function makeApiCall(endpoint, body) {
-            submitPlanBtn.disabled = true;
-            clockOutBtn.disabled = true;
+        async function makeApiCall(endpoint, body, buttonToDisable) {
+            buttonToDisable.disabled = true;
             resultContainer.style.display = 'block';
             resultDiv.innerText = 'AI正在处理中，请稍候...';
 
@@ -97,8 +96,7 @@
             } catch (error) {
                 resultDiv.innerText = `网络或服务器请求失败：\n${error.toString()}`;
             } finally {
-                submitPlanBtn.disabled = false;
-                clockOutBtn.disabled = false;
+                buttonToDisable.disabled = false;
             }
         }
 
@@ -109,12 +107,12 @@
                 alert('请输入你的计划！');
                 return;
             }
-            makeApiCall('/api/update-schedule', { plan: planText });
+            makeApiCall('/api/update-schedule', { plan: planText }, submitPlanBtn);
         });
 
         // 下班按钮的事件监听
         clockOutBtn.addEventListener('click', () => {
-            makeApiCall('/api/clock-out', {});
+            makeApiCall('/api/clock-out', {}, clockOutBtn);
         });
     </script>
 </body>

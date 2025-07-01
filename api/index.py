@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import os
 import sys
 import traceback
+import re # 导入正则表达式模块
 from datetime import date, timedelta
 from tools.google_sheets_tool import update_schedule_tool, clock_out_tool, populate_month_schedule_tool
 # 添加项目根目录到sys.path
@@ -28,7 +29,7 @@ def get_llm():
         model="gpt-4o"
     )
 
-# --- 新的 API 端点: /api/update-schedule ---
+# --- 优化后的 API 端点: /api/update-schedule ---
 @app.route('/api/update-schedule', methods=['POST'])
 def update_schedule():
     data = request.get_json()
@@ -36,34 +37,39 @@ def update_schedule():
     if not plan_text:
         return jsonify({"status": "error", "message": "没有提供计划文本"}), 400
 
-    llm = get_llm()
+    # --- 优化：优先使用规则解析简单命令 ---
+    # 匹配 "填充X月日历" 或 "生成YYYY年M月排班"
+    populate_match = re.search(r"(?:填充|生成)(?:(\d{4})年)?(\d{1,2})月(?:日历|的排班|排班)?", plan_text)
+    if populate_match:
+        try:
+            year_str, month_str = populate_match.groups()
+            year = int(year_str) if year_str else date.today().year
+            month = int(month_str)
+            
+            if not (1 <= month <= 12):
+                 return jsonify({"status": "error", "message": "月份必须在1到12之间。"}), 400
 
-    # Agent 1: 规划师，负责理解自然语言
+            # 直接调用工具，绕过LLM
+            result_message = populate_month_schedule_tool.run(year=year, month=month)
+            return jsonify({"status": "success", "message": result_message})
+        except Exception as e:
+            return jsonify({"status": "error", "message": f"处理填充日历命令时出错: {e}"}), 500
+
+    # --- 如果规则不匹配，回退到使用LLM Agent ---
+    llm = get_llm()
     planner_agent = Agent(
         role="日程规划解析员",
         goal=f"解析用户的自然语言输入，并将其转换为对 'Update Schedule Tool' 的精确调用。今天是 {date.today().strftime('%Y-%m-%d')}。",
         backstory="你是一个高效的助理，擅长从非结构化的文本中提取关键信息，比如日期和意图（是上班还是休息）。你会处理'明天'、'后天'、'下周三'等相对日期。",
         llm=llm,
-        tools=[update_schedule_tool,populate_month_schedule_tool],
+        tools=[update_schedule_tool], # 注意：这里只给它Update工具，因为Populate已经由规则处理了
         verbose=True
     )
-
-    # Task 1: 解析并更新
     update_task = Task(
-    description=f"""
-    解析以下用户的日程计划: '{plan_text}'
-    你的任务是根据用户的意图，选择一个工具来执行：
-    
-    1.  如果用户的意图是【修改某一个或几个特定日期】（例如"明天休息"、"下周三上班"），你应该使用 'Update Schedule Tool'。你需要从中解析出 `target_date` 和 `is_workday` 参数。
-    
-    2.  如果用户的意图是【为一个完整的月份生成默认排班】（例如"填充六月日历"、"生成2024年7月的排班"），你应该使用 'Populate Month Schedule Tool'。你需要从中解析出 `year` 和 `month` 参数。
-    
-    3.  执行你选择的工具，并返回其最终结果。
-    """,
-    expected_output="一个确认操作成功的字符串，说明执行了哪个操作以及结果。",
-    agent=planner_agent
-)
-    # 创建并启动规划Crew
+        description=f"解析以下用户的日程计划: '{plan_text}'。你的任务是使用 'Update Schedule Tool' 来更新单个日期的状态。你需要从中解析出 `target_date` 和 `is_workday` 参数并执行工具。",
+        expected_output="一个确认操作成功的字符串，说明执行了哪个操作以及结果。",
+        agent=planner_agent
+    )
     schedule_crew = Crew(
         agents=[planner_agent],
         tasks=[update_task],
@@ -72,36 +78,18 @@ def update_schedule():
     result = schedule_crew.kickoff()
     return jsonify({"status": "success", "message": result.raw if hasattr(result, 'raw') else result})
 
-# --- 旧的 API 端点: /api/clock-out ---
+# --- 优化后的 API 端点: /api/clock-out ---
 @app.route('/api/clock-out', methods=['POST'])
 def clock_out():
-    llm = get_llm()
+    try:
+        # 直接调用工具，移除不必要的Agent和Crew开销
+        result_message = clock_out_tool.run()
+        return jsonify({"status": "success", "message": result_message})
+    except Exception as e:
+        # 记录详细错误，以便调试
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"执行打卡操作时出错: {e}"}), 500
 
-    # Agent 2: 操作员，负责记录
-    operator_agent = Agent(
-        role="考勤记录员",
-        goal="使用 'Clock Out and Calculate Tool' 来记录今天的下班时间并进行计算。",
-        backstory="你是一个严谨的记录员，你的唯一任务就是在被调用时，执行下班打卡工具。",
-        llm=llm,
-        tools=[clock_out_tool],
-        verbose=True
-    )
-
-    # Task 2: 记录和计算
-    clock_out_task = Task(
-        description="用户点击了'我下班啦'按钮。立即使用 'Clock Out and Calculate Tool' 工具。不需要任何参数。",
-        expected_output="一个包含下班时间、加班时长和未来建议的完整报告。",
-        agent=operator_agent
-    )
-    
-    # 创建并启动记录Crew
-    clock_out_crew = Crew(
-        agents=[operator_agent],
-        tasks=[clock_out_task],
-        process=Process.sequential
-    )
-    result = clock_out_crew.kickoff()
-    return jsonify({"status": "success", "message": result.raw if hasattr(result, 'raw') else result})
 @app.route('/api/get-suggestion', methods=['GET'])
 def get_suggestion():
     # 这个任务很简单，我们可以直接调用工具，甚至不需要Agent
@@ -110,6 +98,7 @@ def get_suggestion():
         return jsonify({"status": "success", "message": suggestion_message})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
 # --- 主页路由 ---
 @app.route('/')
 def index():
