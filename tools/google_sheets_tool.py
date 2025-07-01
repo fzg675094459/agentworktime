@@ -255,21 +255,47 @@ def get_daily_suggestion_tool() -> str:
             print(f"[LOG] An unexpected error occurred while checking for workday: {e}")
             return suggestion
 
-        print("[LOG] Proceeding to overtime calculation...")
-        all_overtime_values = worksheet.col_values(6)[1:]
-        print(f"[LOG] Fetched overtime values (Column 6): {all_overtime_values}")
+        print("[LOG] Proceeding to overtime calculation for the current month...")
         
-        # 增强的求和逻辑，能处理各种意外情况
-        monthly_total_overtime = 0
-        for v in all_overtime_values:
-            try:
-                # 尝试将值转换为浮点数，忽略空字符串或非数字
-                if v and isinstance(v, (str, int, float)):
-                    monthly_total_overtime += float(v)
-            except (ValueError, TypeError):
-                print(f"[LOG] Could not convert overtime value '{v}' to float. Skipping.")
-                continue
-        print(f"[LOG] Calculated monthly_total_overtime: {monthly_total_overtime}")
+        # 获取所有相关列的值，以减少API调用次数
+        all_values = worksheet.get_all_values()
+        if not all_values or len(all_values) < 2:
+            # 如果表格为空或只有表头，则无需计算
+            monthly_total_overtime = 0
+            print("[LOG] Worksheet is empty or contains only a header. Total overtime is 0.")
+        else:
+            data_rows = all_values[1:] # 跳过表头
+
+            current_month = today.month
+            current_year = today.year
+            monthly_total_overtime = 0
+
+            # 列索引（0-based）: A=0, F=5
+            date_col_index = 0
+            overtime_col_index = 5
+
+            for row in data_rows:
+                try:
+                    # 确保行中有足够的数据来访问日期和加班列
+                    if len(row) > max(date_col_index, overtime_col_index):
+                        date_str = row[date_col_index]
+                        overtime_str = row[overtime_col_index]
+                        
+                        # 跳过没有日期或加班数据的行
+                        if not date_str or not overtime_str:
+                            continue
+
+                        row_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+                        # 仅对当前月份的行进行累加
+                        if row_date.year == current_year and row_date.month == current_month:
+                            monthly_total_overtime += float(overtime_str)
+                except (ValueError, TypeError):
+                    # 忽略无法解析日期或加班时间的行
+                    print(f"[LOG] Skipping row due to parsing error: {row}")
+                    continue
+        
+        print(f"[LOG] Calculated monthly_total_overtime for {current_year}-{current_month}: {monthly_total_overtime}")
 
         all_dates = worksheet.col_values(1)
         all_workday_flags = worksheet.col_values(3)
