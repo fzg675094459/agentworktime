@@ -96,63 +96,111 @@ def update_schedule_tool(target_date: str, is_workday: bool) -> str:
 def clock_out_tool() -> str:
     """
     记录今天的下班时间，并计算加班时长。仅在用户点击“我下班啦”时使用。
+    此版本经过优化，使用 batch_update 来减少 API 调用，提高响应速度。
     """
     try:
         worksheet = _get_worksheet()
-        today_str = date.today().strftime("%Y-%m-%d")
+        today = date.today()
+        today_str = today.strftime("%Y-%m-%d")
+        
+        # --- 1. 查找或创建今天的行，并获取所需数据 ---
+        # 为了减少API调用，我们一次性获取多一点数据
         row_index = _find_or_create_row(worksheet, today_str)
+        # 使用 batch_get 获取多个单元格，比单个cell()调用更高效
+        cell_range = f"C{row_index}:D{row_index}"
+        cell_values = worksheet.get(cell_range, value_render_option='FORMATTED_VALUE')
+        
+        is_workday = cell_values[0][0] if len(cell_values) > 0 and len(cell_values[0]) > 0 else ''
+        standard_off_time_str = cell_values[0][1] if len(cell_values) > 0 and len(cell_values[0]) > 1 else '18:00:00'
 
-        is_workday = worksheet.cell(row_index, 3).value
         if not is_workday or is_workday.lower() != '是':
             return f"根据你的计划，今天 ({today_str}) 不是工作日，无需记录下班。"
 
+        # --- 2. 计算加班数据 ---
         now = datetime.now()
         off_work_time_str = now.strftime("%H:%M:%S")
-        worksheet.update_cell(row_index, 5, off_work_time_str)
-
-        standard_off_time_str = worksheet.cell(row_index, 4).value
+        
         standard_off_time = datetime.strptime(standard_off_time_str, "%H:%M:%S").time()
         actual_off_time = now.time()
-        overtime_delta = datetime.combine(date.today(), actual_off_time) - datetime.combine(date.today(), standard_off_time)
-        overtime_hours = max(0, overtime_delta.total_seconds() / 3600)
-        worksheet.update_cell(row_index, 6, f"{overtime_hours:.2f}")
-
-        all_overtime_values = worksheet.col_values(6)[1:]
-        monthly_total_overtime = sum(float(v) for v in all_overtime_values if v)
-        worksheet.update_cell(row_index, 7, f"{monthly_total_overtime:.2f}")
-
-        all_dates = worksheet.col_values(1)
-        all_workday_flags = worksheet.col_values(3)
-        future_workdays = 0
         
-        today_sheet_index = -1
-        if today_str in all_dates:
-            today_sheet_index = all_dates.index(today_str)
+        overtime_delta = datetime.combine(today, actual_off_time) - datetime.combine(today, standard_off_time)
+        overtime_hours = max(0, overtime_delta.total_seconds() / 3600)
+
+        # --- 3. 计算月度累计加班 (与 get_suggestion_tool 逻辑保持一致) ---
+        all_values = worksheet.get_all_values()
+        monthly_total_overtime = 0
+        if len(all_values) > 1:
+            data_rows = all_values[1:]
+            current_month = today.month
+            current_year = today.year
+            
+            # 在累加前，先把当前计算出的加班时间加上
+            # 这样可以避免再次读取表格，并确保数据是完全最新的
+            current_day_overtime = overtime_hours
+
+            for i, row in enumerate(data_rows):
+                try:
+                    # 跳过我们正在处理的当前行，因为它的加班数据还没写入
+                    if i + 2 == row_index:
+                        continue
+                        
+                    if len(row) > 5:
+                        date_str, overtime_str = row[0], row[5]
+                        if not date_str or not overtime_str:
+                            continue
+                        row_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                        if row_date.year == current_year and row_date.month == current_month:
+                            monthly_total_overtime += float(overtime_str)
+                except (ValueError, TypeError):
+                    continue
+            
+            # 加上今天刚计算出的加班时间
+            monthly_total_overtime += current_day_overtime
+
+        # --- 4. 准备批量更新 ---
+        update_requests = [
+            {
+                'range': f'E{row_index}', # 下班时间
+                'values': [[off_work_time_str]],
+            },
+            {
+                'range': f'F{row_index}', # 当日加班
+                'values': [[f"{overtime_hours:.2f}"]],
+            },
+            {
+                'range': f'G{row_index}', # 本月累计
+                'values': [[f"{monthly_total_overtime:.2f}"]],
+            }
+        ]
+        worksheet.batch_update(update_requests, value_input_option='USER_ENTERED')
+
+        # --- 5. 生成建议 (这部分逻辑可以复用 get_daily_suggestion_tool 或简化) ---
+        # 为了保持函数独立性，我们在这里重新计算一次未来工作日
+        future_workdays = 0
+        today_sheet_index = row_index - 2 # 转换为0-based index
         
         if today_sheet_index != -1:
-            for i in range(today_sheet_index + 1, len(all_dates)):
-                if i < len(all_workday_flags) and all_workday_flags[i] and all_workday_flags[i].lower() == '是':
+            for i in range(today_sheet_index + 1, len(all_values) -1):
+                 if len(all_values[i+1]) > 2 and str(all_values[i+1][2]).strip().lower() == '是':
                     future_workdays += 1
-        
+
         remaining_overtime_budget = 29 - monthly_total_overtime
         suggestion = ""
 
-        if monthly_total_overtime >= 29:
-            suggestion = f"警告！你本月的加班时长已达 {monthly_total_overtime:.2f} 小时，已超出29小时的额度！接下来请务必准时下班！"
-        elif future_workdays > 0 and remaining_overtime_budget > 0:
+        if remaining_overtime_budget <= 0:
+            suggestion = f"警告！你本月的加班时长已达 {monthly_total_overtime:.2f} 小时。接下来请务必准时下班！"
+        elif future_workdays > 0:
             avg_overtime_per_day = remaining_overtime_budget / future_workdays
             suggested_off_time_seconds = 18 * 3600 + avg_overtime_per_day * 3600
             h = int(suggested_off_time_seconds // 3600)
             m = int((suggested_off_time_seconds % 3600) // 60)
-            suggestion = f"根据计划，你本月还有 {future_workdays} 个工作日。为了不超过29小时总加班，你接下来平均需要加班 {avg_overtime_per_day:.2f} 小时，建议在 {h:02d}:{m:02d} 左右下班。"
-        elif future_workdays > 0 and remaining_overtime_budget <= 0:
-            suggestion = "太棒了！你的加班额度已经用完或有富余。接下来请准时下班，享受生活！"
+            suggestion = f"本月还剩 {future_workdays} 个工作日。为达标，接下来建议在 {h:02d}:{m:02d} 左右下班。"
         else:
             suggestion = "本月已无剩余工作日，请好好休息！"
 
-        return (f"成功记录下班时间：{off_work_time_str}。\n"
-                f"当日加班：{overtime_hours:.2f} 小时。\n"
-                f"本月累计加班：{monthly_total_overtime:.2f} 小时。\n\n"
+        return (f"成功记录下班时间：{off_work_time_str}.\n"
+                f"当日加班：{overtime_hours:.2f} 小时.\n"
+                f"本月累计加班：{monthly_total_overtime:.2f} 小时.\n\n"
                 f"【智能建议】\n{suggestion}")
 
     except Exception as e:
